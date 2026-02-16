@@ -1,0 +1,5 @@
+*.ply
+*.npy
+pointcloud.ply
+occupancy_grid.npy
+test_pointcloud.ply
