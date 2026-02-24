@@ -121,6 +121,136 @@ def _process_occupancy_grid(occupancy_grid):
 
     return refined_grid
 
+def _align_pointcloud_horizontally(pointcloud):
+    """
+    Align the point cloud by estimating floor slope along Z and rotating around X-axis.
+    
+    Args:
+        pointcloud (np.ndarray): Nx3 array of 3D points (X right, Y down, Z forward).
+    Returns:
+        np.ndarray: Horizontally aligned point cloud.
+    """
+    if len(pointcloud) == 0:
+        return pointcloud
+
+    finite_mask = np.isfinite(pointcloud).all(axis=1)
+    valid_points = pointcloud[finite_mask]
+    if len(valid_points) < 10:
+        return pointcloud
+
+    y = valid_points[:, 1]
+    z = valid_points[:, 2]
+
+    # Ignore null-depth rows
+    depth_mask = np.abs(z) > 1e-6
+    y = y[depth_mask]
+    z = z[depth_mask]
+    if len(z) < 10:
+        return pointcloud
+
+    z_min = float(np.min(z))
+    z_max = float(np.max(z))
+    if z_max - z_min < 1e-6:
+        return pointcloud
+
+    # Regular interval sampling along Z rows
+    n_bins = 120
+    bin_edges = np.linspace(z_min, z_max, n_bins + 1)
+    bin_idx = np.digitize(z, bin_edges) - 1
+    bin_idx = np.clip(bin_idx, 0, n_bins - 1)
+
+    floor_z_points = []
+    floor_y_points = []
+    min_points_per_bin = 20
+    for idx in range(n_bins):
+        in_bin = bin_idx == idx
+        if np.count_nonzero(in_bin) < min_points_per_bin:
+            continue
+
+        y_bin = y[in_bin]
+        z_bin = z[in_bin]
+        y_bin = y_bin[np.abs(y_bin) > 1e-6]
+        if y_bin.size == 0:
+            continue
+
+        # "Point" value for row: average Z, floor Y from this row
+        z_point = float(np.mean(z_bin))
+        y_floor = float(np.min(y_bin))
+        floor_z_points.append(z_point)
+        floor_y_points.append(y_floor)
+
+    if len(floor_z_points) < 6:
+        print("Not enough floor samples for horizontal alignment; returning original point cloud.")
+        return pointcloud
+
+    floor_z_points = np.asarray(floor_z_points)
+    floor_y_points = np.asarray(floor_y_points)
+
+    # Reject points with excessive Y deviation vs running average
+    filtered_z = [float(floor_z_points[0])]
+    filtered_y = [float(floor_y_points[0])]
+    deviations = []
+    deviation_multiplier = 3.0
+    for z_point, y_point in zip(floor_z_points[1:], floor_y_points[1:]):
+        last_y = filtered_y[-1]
+        dev = abs(float(y_point) - last_y)
+        avg_dev = float(np.mean(deviations)) if deviations else dev
+        threshold = deviation_multiplier * max(avg_dev, 1e-6)
+        if dev <= threshold:
+            filtered_z.append(float(z_point))
+            filtered_y.append(float(y_point))
+            deviations.append(dev)
+
+    if len(filtered_z) < 3:
+        print("Too few consistent floor samples after filtering; returning original point cloud.")
+        return pointcloud
+
+    floor_z_points = np.asarray(filtered_z)
+    floor_y_points = np.asarray(filtered_y)
+
+    floor_points = np.stack(
+        [np.zeros_like(floor_z_points), floor_y_points, floor_z_points],
+        axis=1,
+    )
+    save_pointcloud_to_ply(floor_points, "floor_profile_points.ply")
+
+    # Anchor: first non-null Z row, taken as closest valid floor row to Z=0.
+    anchor_idx = int(np.argmin(np.abs(floor_z_points)))
+    z_anchor = float(floor_z_points[anchor_idx])
+    y_anchor = float(floor_y_points[anchor_idx])
+
+    # Floor slope relative to the anchor row
+    dz = floor_z_points - z_anchor
+    dy = floor_y_points - y_anchor
+    valid_slope = np.abs(dz) > 1e-6
+    if np.count_nonzero(valid_slope) < 3:
+        return pointcloud
+
+    dz = dz[valid_slope]
+    dy = dy[valid_slope]
+
+    # Fit through anchor: dy = m * dz
+    m = float(np.dot(dz, dy) / (np.dot(dz, dz) + 1e-12))
+
+    # Tilt angle and corrective rotation around X-axis
+    theta = np.arctan(m)
+    print(
+        f"Aligning point cloud from floor profile (z-rows), "
+        f"anchor z={z_anchor:.3f}, "
+        f"rotation angle: {-np.degrees(theta):.2f} degrees"
+    )
+
+    cos_theta = np.cos(theta)
+    sin_theta = np.sin(theta)
+    R_x = np.array([[1, 0, 0],
+                    [0, cos_theta, -sin_theta],
+                    [0, sin_theta, cos_theta]])
+
+    anchor_point = np.array([0.0, y_anchor, z_anchor], dtype=np.float32)
+    aligned_pointcloud = (pointcloud - anchor_point) @ R_x.T + anchor_point
+
+    return aligned_pointcloud
+
 def _eliminate_obstacles_not_contacting_freespace(occupancy_grid):
     """
     Eliminate obstacles that are not in contact with any free space (4-connectivity).
@@ -240,10 +370,15 @@ def image_to_3d_pointcloud(rgb_image, camera_intrinsics, model=None,
     # Create pixel grid
     x, y = np.meshgrid(np.arange(w), np.arange(h))
     
-    # Back-project to 3D with inverted Y and Z axes
     X = (x - cx) * depth / fx
-    Y = -(y - cy) * depth / fy
-    Z = -depth
+    Y = (y - cy) * depth / fy
+    Z = depth
+
+    camera_upside_down = True
+    if camera_upside_down:
+        Y = -Y
+        X = -X
+
     
     # Stack into point cloud (N, 3)
     points = np.stack([X, Y, Z], axis=-1).reshape(-1, 3)
@@ -265,6 +400,25 @@ def image_to_3d_pointcloud(rgb_image, camera_intrinsics, model=None,
             f.write(f'{p[0]} {p[1]} {p[2]}\n')
     
     return points
+
+def save_pointcloud_to_ply(points, filename):
+    """
+    Save a point cloud to a PLY file.
+    
+    Args:
+        points (np.ndarray): Nx3 array of 3D points.
+        filename (str): Output filename for the PLY file.
+    """
+    with open(filename, 'w') as f:
+        f.write('ply\n')
+        f.write('format ascii 1.0\n')
+        f.write(f'element vertex {len(points)}\n')
+        f.write('property float x\n')
+        f.write('property float y\n')
+        f.write('property float z\n')
+        f.write('end_header\n')
+        for p in points:
+            f.write(f'{p[0]} {p[1]} {p[2]}\n')
 
 def pointcloud_to_occupancy_grid(pointcloud, grid_size, grid_resolution, height_range=(-0.5, 2.0), obstacle_threshold=0.1, use_data_bounds=True, padding=0.5):
     """

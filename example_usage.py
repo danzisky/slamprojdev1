@@ -16,7 +16,9 @@ from mapper import (
     _trim_3d_pointcloud,
     pointcloud_to_occupancy_grid, 
     _process_occupancy_grid,
-    visualize_occupancy_grid
+    visualize_occupancy_grid,
+    save_pointcloud_to_ply,
+    _align_pointcloud_horizontally
 )
 
 def read_ply(filepath):
@@ -106,6 +108,9 @@ def main():
         camera_intrinsics=camera_intrinsics,
         model=model  # Pass pre-loaded model
     )
+    # flip z to make forward-positive, and flip x to make right-positive
+    # pointcloud[:, 2] = -pointcloud[:, 2]
+    # pointcloud = _align_pointcloud_horizontally(pointcloud)
 
     # pointcloud = read_ply('./test_pointcloud.ply')  # Replace with your PLY file path
     
@@ -117,7 +122,10 @@ def main():
     #     dataset='hypersim',
     #     max_depth=20
     # )
-    
+    # flip z to make forward-positive, and flip x to make right-positive
+    # pointcloud[:, 2] = -pointcloud[:, 2]
+    # pointcloud[:, 0] = -pointcloud[:, 0]
+
     print(f"Generated point cloud with {len(pointcloud)} points")
     print(f"Point cloud shape: {pointcloud.shape}")
     print(f"Point cloud bounds:")
@@ -131,7 +139,9 @@ def main():
     print("=" * 60)
     
     max_distance = 7.0  # Keep only points within 7 meters
-    pointcloud_trimmed = _trim_3d_pointcloud(pointcloud, max_distance)
+    # pointcloud_trimmed = _trim_3d_pointcloud(pointcloud, max_distance)
+    pointcloud_trimmed = pointcloud.copy()  # Skip trimming for now
+    pointcloud_trimmed = _align_pointcloud_horizontally(pointcloud)
     print(f"After trimming: {len(pointcloud_trimmed)} points remain")
     
     # === STEP 4: Convert Point Cloud to Occupancy Grid ===
@@ -199,14 +209,17 @@ def main():
     
     cv2.imwrite('raw_occupancy_grid.png', raw_vis)
     cv2.imwrite('processed_occupancy_grid.png', processed_vis)
-    np.save('pointcloud.npy', pointcloud_trimmed)
-    np.save('occupancy_grid.npy', processed_grid)
+    # np.save('pointcloud.npy', pointcloud_trimmed)
+    # np.save('occupancy_grid.npy', processed_grid)
+
+    save_pointcloud_to_ply(pointcloud_trimmed, 'ex_u_pointcloud.ply')
     
     print("Results saved:")
     print("  - raw_occupancy_grid.png")
-    print("  - processed_occupancy_grid.png")
-    print("  - pointcloud.npy")
-    print("  - occupancy_grid.npy")
+    # print("  - processed_occupancy_grid.png")
+    # print("  - pointcloud.npy")
+    # print("  - occupancy_grid.npy")
+    print("  - pointcloud.ply")
     
     print("\n✓ Pipeline completed successfully!")
 
