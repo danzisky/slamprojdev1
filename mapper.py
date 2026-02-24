@@ -72,6 +72,10 @@ def _process_occupancy_grid(occupancy_grid):
     freespace_mask = (grid_cv == 0).astype(np.uint8)
 
     # --- 1. Process Obstacles ---
+    # close gaps using rectangular kernels (longer in the forward direction)
+    kernel_longitudinal = np.ones((5, 2), np.uint8)
+    obstacle_mask = cv2.dilate(obstacle_mask, kernel_longitudinal, iterations=2)
+    
     # Remove noise (small specks)
     kernel_noise = np.ones((2, 1), np.uint8)
     obstacle_mask = cv2.erode(obstacle_mask, kernel_noise, iterations=6)
@@ -379,23 +383,32 @@ def pointcloud_to_occupancy_grid(pointcloud, grid_size, grid_resolution, height_
 def visualize_occupancy_grid(occupancy_grid):
     """
     Visualize the occupancy grid using OpenCV.
-    
+
     Args:
-        occupancy_grid (np.ndarray): 2D array where 0=free, 1=occupied, -1=unknown.
+        occupancy_grid (np.ndarray): 2D array with probability values in [0, 1]
+            or discrete values -1 (unknown), 0 (free), 1 (occupied).
     Returns:
         np.ndarray: Color image visualizing the occupancy grid (BGR).
     """
-    # Create color image
     height, width = occupancy_grid.shape
+
+    grid_min = float(np.min(occupancy_grid))
+    grid_max = float(np.max(occupancy_grid))
+    if grid_min >= 0.0 and grid_max <= 1.0:
+        prob = np.clip(occupancy_grid.astype(np.float32), 0.0, 1.0)
+        intensity = (1.0 - prob) * 255.0
+        gray = intensity.astype(np.uint8)
+        return cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
     vis_image = np.zeros((height, width, 3), dtype=np.uint8)
-    
+
     # Colors (BGR)
-    COLOR_UNKNOWN = [128, 128, 128] # Gray
-    COLOR_FREE = [255, 255, 255]    # White
-    COLOR_OCCUPIED = [0, 0, 0]      # Black
-    
+    COLOR_UNKNOWN = [128, 128, 128]  # Gray
+    COLOR_FREE = [255, 255, 255]     # White
+    COLOR_OCCUPIED = [0, 0, 0]       # Black
+
     vis_image[occupancy_grid == -1] = COLOR_UNKNOWN
     vis_image[occupancy_grid == 0] = COLOR_FREE
     vis_image[occupancy_grid == 1] = COLOR_OCCUPIED
-    
+
     return vis_image

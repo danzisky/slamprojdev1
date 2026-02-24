@@ -66,8 +66,12 @@ def main():
     
     # Load image
     # image_path = './test_image.jpeg'  # Replace with your image
-    image_path = './images_surroundings/plus_157.jpeg'  # Replace with your image
+    # image_path = './images_surroundings/plus_157.jpeg'  # Replace with your image
+    image_path = './inputs/2.jpg'  # Replace with your image
     rgb_image = cv2.imread(image_path)
+    # cap = cv2.VideoCapture(1)
+    # ret, rgb_image = cap.read()
+    # cap.release()
     
     if rgb_image is None:
         print(f"Error: Could not load image from {image_path}")
@@ -76,11 +80,23 @@ def main():
     print(f"Image shape: {rgb_image.shape}")
     
     # Define camera intrinsics (adjust based on your camera)
-    camera_intrinsics = {
+    """ camera_intrinsics = {
         'fx': 470.4 * 1.5,    # Focal length X
         'fy': 470.4 * 1.5,    # Focal length Y
         'cx': rgb_image.shape[1] / 2.0,  # Principal point X
         'cy': rgb_image.shape[0] / 2.0   # Principal point Y
+    } """
+    """ camera_intrinsics = {
+        "fx": 1332.00718,
+        "fy": 1332.22300,
+        "cx": 969.027259,
+        "cy": 452.073112,
+    } """
+    camera_intrinsics = {
+        "fx": 589.54200724,
+        "fy": 589.80048532,
+        "cx": 328.93066342,
+        "cy": 200.86625768 * 0.85,
     }
     
     # Convert image to point cloud using DepthAnythingV2
@@ -114,7 +130,7 @@ def main():
     print("STEP 3: Trimming Point Cloud (Optional)")
     print("=" * 60)
     
-    max_distance = 20.0  # Keep only points within 20 meters
+    max_distance = 7.0  # Keep only points within 7 meters
     pointcloud_trimmed = _trim_3d_pointcloud(pointcloud, max_distance)
     print(f"After trimming: {len(pointcloud_trimmed)} points remain")
     
@@ -127,7 +143,7 @@ def main():
     grid_size = (10.0, 15.0)        # (width, height) in meters
     grid_resolution = 0.05          # 5cm per cell
     height_range = (-0.5, 2.0)      # Consider obstacles from -0.5m to 2.0m
-    obstacle_threshold = 0.8        # Height threshold for obstacles
+    obstacle_threshold = 0.1        # Height threshold for obstacles
     
     occupancy_grid = pointcloud_to_occupancy_grid(
         pointcloud=pointcloud_trimmed,

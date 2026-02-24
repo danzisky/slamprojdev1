@@ -3,3 +3,9 @@
 pointcloud.ply
 occupancy_grid.npy
 test_pointcloud.ply
+*.pt
+*.onnx
+*.tflite
+*.zip
+*.npy
+*.ply

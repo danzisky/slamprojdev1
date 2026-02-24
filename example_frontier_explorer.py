@@ -17,7 +17,8 @@ def main():
 
     # external_imu = HyperIMU()
     # robot = WaveRoverController(robot_ip="192.168.137.122", external_imu=external_imu)
-    robot = WaveRoverController(robot_ip="192.168.137.122", use_fused_internal_yaw=False)
+    robot = WaveRoverController(robot_ip="192.168.137.196", use_fused_internal_yaw=False)
+    # robot = WaveRoverController(robot_ip="192.168.4.1", use_fused_internal_yaw=False)
     robot.connect()
 
     frame = None
@@ -32,15 +33,25 @@ def main():
         raise SystemExit("No frame from camera")
 
     h, w = frame.shape[:2]
+    """ intrinsics = {
+        # "fx": 470.4 * 1.5,
+        # "fy": 470.4 * 1.5,
+        "fx": 1332.00718,
+        "fy": 1332.22300,
+        "cx": 969.027259,
+        "cy": 452.073112,
+    } """
+
     intrinsics = {
-        "fx": 470.4 * 1.5,
-        "fy": 470.4 * 1.5,
-        "cx": w / 2.0,
-        "cy": h / 2.0,
+        "fx": 589.54200724,
+        "fy": 589.80048532,
+        "cx": 328.93066342,
+        "cy": 200.86625768 * 0.85,
     }
 
-    explorer = FrontierExplorer(robot=robot, camera=camera, intrinsics=intrinsics)
-    scans = explorer.scan_n_times(num_scans=5, total_angle_deg=180.0)
+    explorer = FrontierExplorer(robot=robot, camera=camera, intrinsics=intrinsics, obstacle_threshold=0.5, max_depth=15.0)
+    scans = explorer.scan_n_times(num_scans=1, total_angle_deg=0)
+    # scans = explorer.scan_n_times(num_scans=5, total_angle_deg=210)
     combined_grid = explorer.build_combined_map(scans, debug=True)
 
     vis = visualize_occupancy_grid(combined_grid)
