@@ -141,7 +141,7 @@ def main():
     max_distance = 7.0  # Keep only points within 7 meters
     # pointcloud_trimmed = _trim_3d_pointcloud(pointcloud, max_distance)
     pointcloud_trimmed = pointcloud.copy()  # Skip trimming for now
-    pointcloud_trimmed = _align_pointcloud_horizontally(pointcloud)
+    # pointcloud_trimmed = _align_pointcloud_horizontally(pointcloud)
     print(f"After trimming: {len(pointcloud_trimmed)} points remain")
     
     # === STEP 4: Convert Point Cloud to Occupancy Grid ===

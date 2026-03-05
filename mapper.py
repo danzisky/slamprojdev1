@@ -399,7 +399,7 @@ def image_to_3d_pointcloud(rgb_image, camera_intrinsics, model=None,
         for p in points:
             f.write(f'{p[0]} {p[1]} {p[2]}\n')
     
-    return points
+    return _align_pointcloud_horizontally(points)
 
 def save_pointcloud_to_ply(points, filename):
     """
