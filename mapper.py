@@ -420,6 +420,33 @@ def save_pointcloud_to_ply(points, filename):
         for p in points:
             f.write(f'{p[0]} {p[1]} {p[2]}\n')
 
+def _parse_obstacle_threshold(obstacle_threshold):
+    """
+    Parse obstacle threshold configuration.
+
+    Args:
+        obstacle_threshold: Either a single numeric value (scalar threshold)
+            or a 2-element iterable (min_height, max_height).
+
+    Returns:
+        tuple[str, float | tuple[float, float]]:
+            ("scalar", threshold) or ("range", (min_height, max_height)).
+    """
+    if isinstance(obstacle_threshold, (int, float, np.integer, np.floating)):
+        return "scalar", float(obstacle_threshold)
+
+    if isinstance(obstacle_threshold, (tuple, list, np.ndarray)) and len(obstacle_threshold) == 2:
+        min_height = float(obstacle_threshold[0])
+        max_height = float(obstacle_threshold[1])
+        if min_height > max_height:
+            min_height, max_height = max_height, min_height
+        return "range", (min_height, max_height)
+
+    raise TypeError(
+        "obstacle_threshold must be a numeric value or a 2-element range "
+        "(min_height, max_height)."
+    )
+
 def pointcloud_to_occupancy_grid(pointcloud, grid_size, grid_resolution, height_range=(-0.5, 2.0), obstacle_threshold=0.1, use_data_bounds=True, padding=0.5):
     """
     Convert a 3D point cloud to a 2D occupancy grid.
@@ -429,7 +456,9 @@ def pointcloud_to_occupancy_grid(pointcloud, grid_size, grid_resolution, height_
         grid_size (tuple): (width, height) of the occupancy grid in meters. Used only when use_data_bounds=False.
         grid_resolution (float): Size of each grid cell in meters.
         height_range (tuple): (min, max) height to consider for obstacles/freespace (relative to camera Y).
-        obstacle_threshold (float): Height threshold to consider a cell occupied.
+        obstacle_threshold (float | int | tuple | list):
+            Either a single height threshold (occupied if height > threshold)
+            or a 2-value range (occupied if min_height <= height <= max_height).
         use_data_bounds (bool): If True, compute grid bounds from point cloud data (mirrors pointcloud_to_occupancy_grid.py).
         padding (float): Padding (meters) to add around data bounds when use_data_bounds=True.
     
@@ -521,9 +550,16 @@ def pointcloud_to_occupancy_grid(pointcloud, grid_size, grid_resolution, height_
     np.maximum.at(height_grid_flat, flat_indices, valid_y)
     height_grid = height_grid_flat.reshape(grid_h, grid_w)
 
-    # Mark occupied cells (cells with obstacles above threshold)
-    occupancy_grid[height_grid > obstacle_threshold] = 1
-    occupancy_grid[height_grid <= obstacle_threshold] = 0
+    # Mark occupied cells using scalar threshold or inclusive height range
+    threshold_mode, threshold_value = _parse_obstacle_threshold(obstacle_threshold)
+    if threshold_mode == "scalar":
+        occupied_mask = height_grid > threshold_value
+    else:
+        min_height, max_height = threshold_value
+        occupied_mask = (height_grid >= min_height) & (height_grid <= max_height)
+
+    occupancy_grid[occupied_mask] = 1
+    occupancy_grid[~occupied_mask] = 0
 
     # Mark cells with no data as unknown
     visited_flat = np.zeros(grid_h * grid_w, dtype=bool)

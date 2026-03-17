@@ -14,7 +14,8 @@ from mapper import (
     image_to_3d_pointcloud,
     pointcloud_to_occupancy_grid,
     _process_occupancy_grid,
-    visualize_occupancy_grid
+    visualize_occupancy_grid,
+    save_pointcloud_to_ply,
 )
 
 from frontier_utils import (
@@ -109,7 +110,7 @@ def main():
         # ('images_surroundings/min_88.jpeg', convert_angle_180_to_360(-88)),
         ('images_surroundings/min_141.jpeg', convert_angle_180_to_360(-141)),
         # ('images_surroundings/plus_149.jpeg', convert_angle_180_to_360(149)),
-        ('images_surroundings/plus_157.jpeg', convert_angle_180_to_360(157)),
+        # ('images_surroundings/plus_157.jpeg', convert_angle_180_to_360(157)),
     ]
     
     # 2. Load Model
@@ -125,17 +126,19 @@ def main():
         print("Error: Could not read image.")
         return
     h, w = dummy_img.shape[:2]
+    
     intrinsics = {
-        'fx': 470.4 * 1.5,
-        'fy': 470.4 * 1.5,
-        'cx': w / 2.0,
-        'cy': h / 2.0
+        "fx": 589.54200724,
+        "fy": 589.80048532,
+        "cx": 328.93066342,
+        "cy": 200.86625768 * 0.85,
     }
 
     grid_size = (10.0, 15.0)
     resolution = 0.05
     height_range = (-0.5, 2.0)
-    obstacle_threshold = 0.8
+    obstacle_threshold = 0.5
+    # obstacle_threshold = (0.4, 0.6) # Optional: use (min_height, max_height)
 
     # Initialize combined grid (centered, fixed size)
     grid_w = int(np.ceil(grid_size[0] / resolution))
@@ -158,9 +161,6 @@ def main():
         points = image_to_3d_pointcloud(rgb, intrinsics, model=model)
 
         pointcloud_trimmed = _trim_3d_pointcloud(points, 20.0)
-        # Preserve robot origin by using forward-positive Z with fixed grid bounds.
-        pointcloud_trimmed[:, 2] = -pointcloud_trimmed[:, 2]
-        pointcloud_trimmed[:, 0] = -pointcloud_trimmed[:, 0] # Flip X to match right-positive convention
 
         # Convert Point Cloud -> Occupancy Grid (camera frame)
         grid = pointcloud_to_occupancy_grid(
@@ -173,7 +173,8 @@ def main():
         )
 
         # Process (Refine)
-        processed_grid = _process_occupancy_grid(grid)
+        # processed_grid = _process_occupancy_grid(grid)
+        processed_grid = grid
 
         # Visualize per-frame raw and processed grids (mirrors example_usage)
         raw_vis = visualize_occupancy_grid(grid)

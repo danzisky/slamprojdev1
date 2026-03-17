@@ -153,7 +153,8 @@ def main():
     grid_size = (10.0, 15.0)        # (width, height) in meters
     grid_resolution = 0.05          # 5cm per cell
     height_range = (-0.5, 2.0)      # Consider obstacles from -0.5m to 2.0m
-    obstacle_threshold = 0.1        # Height threshold for obstacles
+    # obstacle_threshold = 0.1        # Height threshold for obstacles
+    obstacle_threshold = (0.4, 0.6) # Optional: use (min_height, max_height) for more precise classification
     
     occupancy_grid = pointcloud_to_occupancy_grid(
         pointcloud=pointcloud_trimmed,
@@ -174,7 +175,8 @@ def main():
     print("STEP 5: Processing Occupancy Grid (Morphological Operations)")
     print("=" * 60)
     
-    processed_grid = _process_occupancy_grid(occupancy_grid)
+    # processed_grid = _process_occupancy_grid(occupancy_grid)
+    processed_grid = occupancy_grid
     
     print(f"Processed grid statistics:")
     print(f"  Free cells: {np.sum(processed_grid == 0)}")
