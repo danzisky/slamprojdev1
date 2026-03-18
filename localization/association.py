@@ -40,7 +40,7 @@ class JointCompatibilityAssociator:
     def __init__(
         self,
         default_range_std_m: float = 0.5,
-        default_bearing_std_rad: float = math.radians(4.0),
+        default_bearing_std_rad: float = math.radians(5.73),
         matching_method: str = "hungarian",
     ):
         self.default_range_std_m = float(default_range_std_m)
@@ -94,12 +94,13 @@ class JointCompatibilityAssociator:
         # Likelihood from assignment cost
         likelihood = math.exp(-0.5 * total_cost)
         
-        # Old-code style count mismatch penalty: only when we observed more than predicted visible.
+        # Old-code style count mismatch penalty: only penalize when we observed
+        # more chairs than this particle predicts as visible.
         if len(predictions) < len(observations):
             likelihood *= 0.1 ** (len(observations) - len(predictions))
-        
+
         # Occlusion consistency check (like particle_filter_localizer.py)
-        likelihood *= 1/self._occlusion_penalty(observations, predictions, matches)
+        likelihood *= self._occlusion_penalty(observations, predictions, matches)
         
         # Extract unmatched indices
         matched_observations = {i for i, _ in matches}
@@ -215,7 +216,8 @@ class JointCompatibilityAssociator:
                     bearing_diff = abs(wrap_to_pi(pred.bearing_rad - matched_bearing))
                     
                     if bearing_diff < bearing_tolerance:
-                        # Violation: matched to far while closer unmatched in same direction
-                        penalty *= 1.5
+                        # Violation: matched to far while closer unmatched in same direction.
+                        # Match the old localizer's 0.5x penalty per violation.
+                        penalty *= 0.5
         
         return penalty

@@ -36,16 +36,16 @@ class ParticleFilterLocalizer:
         particle_count: int = 800,
         initial_pose: Optional[Pose2D] = None,
         initial_position_std_m: float = 0.25,
-        initial_heading_std_rad: float = math.radians(10.0),
-        motion_forward_std_m: float = 0.05,
-        motion_turn_std_rad: float = math.radians(2.5),
+        initial_heading_std_rad: float = math.radians(10),
+        motion_forward_std_m: float = 0.35,
+        motion_turn_std_rad: float = math.radians(5),
         measurement_max_range_m: Optional[float] = None,
         camera_half_fov_rad: Optional[float] = None,
         enable_range_fov_gating: bool = False,
         resample_threshold: float = 0.55,
         resampling_method: str = "wheel",
-        roughening_position_std_m: float = 0.25,
-        roughening_heading_std_rad: float = math.radians(3),
+        roughening_position_std_m: float = 0.05,
+        roughening_heading_std_rad: float = math.radians(3.0),
         associator: Optional[JointCompatibilityAssociator] = None,
         random_seed: Optional[int] = None,
     ):
@@ -276,19 +276,22 @@ class ParticleFilterLocalizer:
         best_particle_index = int(np.argmax(self.weights))
         best_association = association_results[best_particle_index]
 
-        if do_resample and self.effective_sample_size() < self.resample_threshold * self.particle_count:
-            self._resample_particles()
-
         estimate = self.estimate_pose(
             matched_landmarks=len(best_association.matches),
             observation_count=len(observations),
         )
+        # Build update from pre-resample belief so that the reported pose, std and
+        # ESS all reflect the filter's actual belief before weights are reset.
         update = LocalizationUpdate(
             estimate=estimate,
             observations=observations,
             matches=best_association.matches,
             best_particle_index=best_particle_index,
         )
+
+        if do_resample and self.effective_sample_size() < self.resample_threshold * self.particle_count:
+            self._resample_particles()
+
         self.last_update = update
         return update
 

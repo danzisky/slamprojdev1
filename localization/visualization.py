@@ -27,7 +27,7 @@ class VisualizationConfig:
     preview_window_name: str = "Chair Observations"
     show_map_preview: bool = True
     map_window_name: str = "Localization Map"
-    map_preview_scale: float = 1.5
+    map_preview_scale: float = 1
     draw_particles: bool = True
     max_particles_to_draw: int = 250
     particle_dot_radius_px: int = 4          # filled circle radius for each particle
