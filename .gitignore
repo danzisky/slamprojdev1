@@ -9,3 +9,4 @@ test_pointcloud.ply
 *.zip
 *.npy
 *.ply
+*.pth
