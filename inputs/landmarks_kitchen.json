@@ -1,0 +1,23 @@
+{
+  "resolution": 0.01,
+  "map_size": [
+    368,
+    470
+  ],
+  "landmarks": [
+    [
+      30,
+      317
+    ],
+    [
+      95,
+      232
+    ],
+    [
+      33,
+      151
+    ]
+  ],
+  "count": 3,
+  "map_file": "D:\\schproj\\Depth-Anything-V2\\metric_depth\\slam_rover\\inputs\\kitchenmap.png"
+}

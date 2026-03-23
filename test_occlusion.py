@@ -39,6 +39,7 @@ def test_basic_association():
     result = associator.associate([observation], [prediction])
     assert len(result.matches) == 1, "Should match observation to prediction"
     assert result.matches[0] == (0, 0), "Should match obs 0 to pred 0"
+    assert abs(result.likelihood - 1.0) < 1e-9, "Perfect match should have likelihood 1.0"
     print(f"  ✓ Matched successfully, likelihood: {result.likelihood:.6f}")
 
 
@@ -81,6 +82,7 @@ def test_icp_association():
     
     result = associator.associate([obs1, obs2], [pred1, pred2])
     assert len(result.matches) == 2, "Should match both observations"
+    assert abs(result.likelihood - 1.0) < 1e-9, "Perfect ICP match should have likelihood 1.0"
     print(f"  ✓ Matched 2 pairs, likelihood: {result.likelihood:.6f}")
 
 
@@ -120,6 +122,7 @@ def test_occlusion_penalty():
     # Should match obs to far but apply occlusion penalty (matched far while close unmatched)
     assert len(result.matches) == 1, "Should have 1 match"
     assert result.matches[0] == (0, 0), "Should match obs to far prediction"
+    assert abs(result.likelihood - 0.5) < 1e-9, "Single occlusion violation should apply 0.5x penalty"
     
     # Likelihood should be reduced by occlusion penalty (0.5)
     print(f"  ✓ Match with occlusion penalty applied, likelihood: {result.likelihood:.6f}")
@@ -164,7 +167,7 @@ def test_count_mismatch_penalty():
     
     # 2 observations, 1 prediction should apply old-style 0.1^1 penalty.
     result = associator.associate([obs1, obs2], [pred1])
-    assert result.likelihood < 0.12, "Likelihood should be reduced by count mismatch"
+    assert abs(result.likelihood - 0.1) < 1e-9, "Count mismatch should apply 0.1^1 penalty"
     print(f"  ✓ Count mismatch penalty applied (0.1^1), likelihood: {result.likelihood:.6f}")
 
 
