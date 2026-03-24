@@ -69,6 +69,7 @@ class InteractiveMapper:
         self.mouse_pos: Optional[Tuple[int, int]] = None
         self.is_moving = False
         self._window_initialized = False
+        self.start_pos = start_pos
 
         self.set_robot_pose(start_pos[0], start_pos[1], start_pos[2], record_history=True)
 
@@ -163,16 +164,18 @@ class InteractiveMapper:
         return self.robot.send_command(command)
 
     def sync_heading_from_robot(self) -> Optional[float]:
-        """Pull robot heading from IMU and sync planner orientation."""
+        """Pull heading from robot IMU (the single source of orientation truth).
+
+        After calibrate_heading() has been called, robot.get_current_heading()
+        returns an offset-corrected yaw in the map frame.  We treat that as
+        authoritative and overwrite the local heading + planner state.
+        """
         heading_deg = self.robot.get_current_heading()
         if heading_deg is None:
             return None
 
         self.robot_heading_rad = math.radians(float(heading_deg))
         self.planner.robot_pos[2] = self.robot_heading_rad
-
-        if self.robot.last_imu_data is not None:
-            self.receive_sensor_data(imu_data=self.robot.last_imu_data, metadata={"source": "robot"})
         return heading_deg
 
     def calibrate_heading(self, map_heading_deg: float) -> None:
@@ -246,10 +249,17 @@ class InteractiveMapper:
                     self.robot.move_to(target_pos_meters, self.robot_pos_meters, move_speed)
                 )
 
+                # Update position from executed motion vector.
                 self.robot_pos_meters += executed_motion[:2]
-                self.robot_heading_rad = self._normalize_angle_rad(
-                    self.robot_heading_rad + float(executed_motion[2])
-                )
+
+                # Heading: prefer live IMU reading over dead-reckoned delta.
+                heading_deg = self.robot.get_current_heading()
+                if heading_deg is not None:
+                    self.robot_heading_rad = math.radians(float(heading_deg))
+                else:
+                    self.robot_heading_rad = self._normalize_angle_rad(
+                        self.robot_heading_rad + float(executed_motion[2])
+                    )
 
                 current_grid_pos = robot_to_grid_frame(
                     self.robot_pos_meters,
@@ -265,12 +275,6 @@ class InteractiveMapper:
 
                 self.navigation_history.append(current_grid_tuple)
                 visited.append(current_grid_tuple)
-
-                if self.robot.last_imu_data is not None:
-                    self.receive_sensor_data(
-                        imu_data=self.robot.last_imu_data,
-                        metadata={"waypoint_index": index, "waypoint": current_grid_tuple},
-                    )
 
                 if self._window_initialized:
                     self.draw_state()
@@ -356,46 +360,29 @@ class InteractiveMapper:
         arrow_end_y = int(robot_px_pos[1] - arrow_length * math.sin(self.robot_heading_rad))
         cv2.arrowedLine(viz, robot_px_pos, (arrow_end_x, arrow_end_y), (0, 255, 0), 2, tipLength=0.35)
 
-        snapshot = self.get_sensor_snapshot()
-        imu_data = snapshot.imu_data
         font = cv2.FONT_HERSHEY_SIMPLEX
         text_color = (0, 255, 0)
 
-        live_orientation_deg = math.degrees(self.robot_heading_rad)
-        if imu_data is not None:
-            yaw = getattr(imu_data, "yaw", getattr(imu_data, "orient_yaw", None))
-            if yaw is not None:
-                live_orientation_deg = float(yaw)
+        heading_deg = math.degrees(self.robot_heading_rad)
 
         cv2.putText(viz, f"Map: {self.map_file.name}", (10, 24), font, 0.55, text_color, 2)
         cv2.putText(viz, f"Robot: ({robot_px_pos[0]}, {robot_px_pos[1]})", (10, 48), font, 0.55, text_color, 2)
-        cv2.putText(
-            viz,
-            f"Heading: {math.degrees(self.robot_heading_rad):.1f} deg",
-            (10, 72),
-            font,
-            0.55,
-            text_color,
-            2,
-        )
-        cv2.putText(viz, f"Live orientation: {live_orientation_deg:.1f} deg", (10, 96), font, 0.55, text_color, 2)
+        cv2.putText(viz, f"Heading: {heading_deg:.1f} deg", (10, 72), font, 0.55, text_color, 2)
 
+        imu_data = self.robot.last_imu_data
         if imu_data is not None:
-            yaw = getattr(imu_data, "yaw", getattr(imu_data, "orient_yaw", None))
             accel_x = getattr(imu_data, "accel_x", 0.0)
             accel_y = getattr(imu_data, "accel_y", 0.0)
-
-            if yaw is not None:
-                cv2.putText(viz, f"Sensor yaw: {float(yaw):.1f} deg", (10, 120), font, 0.55, text_color, 2)
-            cv2.putText(viz, f"Accel: ({float(accel_x):.2f}, {float(accel_y):.2f})", (10, 144), font, 0.55, text_color, 2)
+            cv2.putText(viz, f"Accel: ({float(accel_x):.2f}, {float(accel_y):.2f})", (10, 96), font, 0.55, text_color, 2)
 
         if self.mouse_pos is not None:
             delta_x = (self.mouse_pos[0] - robot_px_pos[0]) * self.resolution
             delta_y = (self.mouse_pos[1] - robot_px_pos[1]) * self.resolution
             distance = math.hypot(delta_x, delta_y)
             angle_deg = math.degrees(math.atan2(-delta_y, delta_x) - self.robot_heading_rad)
-            cv2.putText(viz, f"Cursor dist: {distance:.2f} m", (10, 168), font, 0.55, text_color, 2)
-            cv2.putText(viz, f"Cursor angle: {angle_deg:.1f} deg", (10, 192), font, 0.55, text_color, 2)
+            y_offset = 120 if imu_data is not None else 96
+            cv2.putText(viz, f"Cursor dist: {distance:.2f} m", (10, y_offset), font, 0.55, text_color, 2)
+            cv2.putText(viz, f"Cursor angle: {angle_deg:.1f} deg", (10, y_offset + 24), font, 0.55, text_color, 2)
 
         if self._window_initialized:
             cv2.imshow(self.window_name, viz)
@@ -420,7 +407,7 @@ class InteractiveMapper:
             if poll_sensors and (self.sensor_hub.camera is not None or self.sensor_hub.external_imu is not None):
                 self.poll_sensor_receivers(include_robot_imu=False)
 
-            if not self.is_moving and self.robot.connected:
+            if not self.is_moving:
                 self.sync_heading_from_robot()
 
             self.draw_state()
@@ -429,7 +416,11 @@ class InteractiveMapper:
             if key == ord("q"):
                 break
             if key == ord("c"):
-                self.calibrate_heading(math.degrees(self.planner.robot_pos[2]))
+                self.calibrate_heading(self.start_pos[2])
+            if key == ord("r"):
+                start_x = input("Enter start X coordinate (pixels): ")
+                start_y = input("Enter start Y coordinate (pixels): ")
+                self.set_robot_pose(int(start_x), int(start_y), self.start_pos[2], record_history=True)
             if key == ord("p"):
                 self.poll_sensor_receivers(include_robot_imu=True)
             if key == ord("s"):

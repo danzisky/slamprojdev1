@@ -16,8 +16,10 @@ START_Y = 100
 START_HEADING_DEG = 90.0
 
 # Robot and sensor configuration.
-ROBOT_IP = "192.168.137.104"
-PHONE_IP = "192.168.1.101"
+# ROBOT_IP = "192.168.137.104"
+# PHONE_IP = "192.168.1.101"
+ROBOT_IP = "192.168.4.1"
+PHONE_IP = "192.168.4.2"
 CAMERA_TYPE: Optional[str] = None  # "usb", "android", "rb3", or None
 IMU_TYPE: Optional[str] = "android"     # "android", "rb3", or None
 CAMERA_ID = 0
@@ -38,7 +40,7 @@ def meter_to_pixel(meters: float, resolution: float = RESOLUTION_M_PER_PX) -> in
     """Convert a distance in meters to pixels based on the configured map resolution."""
     return int(round(meters / resolution))
 # Optional multi-robot section assignment + patrol planning mode.
-MULTI_ROBOT_PATROL_MODE = True
+MULTI_ROBOT_PATROL_MODE = False
 MULTI_ROBOT_SHOW_WINDOW = True
 MULTI_ROBOT_OUTPUT_IMAGE = SLAM_ROVER_DIR / "output" / "multi_robot_sections_patrols.png"
 MULTI_ROBOT_STARTS = [
