@@ -416,7 +416,13 @@ class InteractiveMapper:
             if key == ord("q"):
                 break
             if key == ord("c"):
-                self.calibrate_heading(self.start_pos[2])
+                heading_relative_to_map_origin = input("Enter current robot heading relative to map origin (degrees): ")
+                try:
+                    heading_deg = float(heading_relative_to_map_origin)
+                    self.calibrate_heading(heading_deg)
+                except ValueError:
+                    print("Invalid heading input; please enter a number.")
+                    self.calibrate_heading(self.start_pos[2])
             if key == ord("r"):
                 start_x = input("Enter start X coordinate (pixels): ")
                 start_y = input("Enter start Y coordinate (pixels): ")

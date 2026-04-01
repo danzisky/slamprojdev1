@@ -564,7 +564,7 @@ class WaveRoverController:
         # Only turn if the required angle is significant (e.g., > 5 degrees)
         if abs(turn_angle_deg) > 5.0:
             print(f"  Turning by {turn_angle_deg:.1f}°...")
-            self.turn_degrees_PRECISE(degrees=turn_angle_deg, max_speed=0.2, min_speed=0.19, timeout=15)
+            self.turn_degrees_PRECISE(degrees=turn_angle_deg, max_speed=0.4, min_speed=0.3, timeout=15)
         else:
             print("  Already facing target, no turn needed.")
 
