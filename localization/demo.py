@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import math
 import sys
+import urllib.request
 from pathlib import Path
 from typing import Optional
 
 import cv2
+import numpy as np
 
 
 if __package__ in {None, ""}:
@@ -18,13 +21,15 @@ if __package__ in {None, ""}:
     from localization.detector import ChairObservationDetector
     from localization.map_data import ChairLocalizationMap
     from localization.particle_filter import ParticleFilterLocalizer
-    from localization.types import MotionCommand, Pose2D
+    from localization.tof import ToFConfig
+    from localization.types import MotionCommand, Pose2D, ToFFrame
     from localization.visualization import LocalizationVisualizer, VisualizationConfig
 else:
     from .detector import ChairObservationDetector
     from .map_data import ChairLocalizationMap
     from .particle_filter import ParticleFilterLocalizer
-    from .types import MotionCommand, Pose2D
+    from .tof import ToFConfig
+    from .types import MotionCommand, Pose2D, ToFFrame
     from .visualization import LocalizationVisualizer, VisualizationConfig
 
 from sensor_interface import USBCamera
@@ -63,7 +68,7 @@ def convert_angle_180_to_360(angle):
 
 # Frame sequence mode: process multiple images taken at different headings
 # Set to True to use frame sequences instead of single image or live camera
-USE_FRAME_SEQUENCE = True
+USE_FRAME_SEQUENCE = False
 # List of (frame_path_relative_to_inputs, heading_in_degrees) tuples
 # Example: images taken around a point at 0°, 90°, 180°, 270°
 FRAME_SEQUENCE = [
@@ -78,6 +83,26 @@ FX = 589.54200724
 FY = 589.80048532
 CX = 328.93066342
 CY = 200.86625768 * 0.85
+
+# ===========================
+# ESP32 device configuration
+# ===========================
+# Set ESPCAM_ENABLED=True to use the ESP32 camera module over HTTP instead of
+# a local USB camera.  Set the IP address printed on the ESP32 serial console
+# at boot (e.g. "Connected. IP: 192.168.4.1").
+ESPCAM_ENABLED = True
+ESPCAM_IP = "192.168.137.245"        # <-- change to your rover's IP
+ESPCAM_CAPTURE_PORT = 80          # main HTTP server port on the ESP32
+ESPCAM_TIMEOUT_S = 3.0            # per-request timeout in seconds
+
+# Set ESPCAM_TOF_ENABLED=True to also fetch VL53L5CX readings from the ESP32
+# (/distance endpoint) and fuse them into the particle filter.
+ESPCAM_TOF_ENABLED = True
+TOF_ZONE_PRESET = "middle"        # "middle" = single horizontal strip (8 rays), "centre" or "wide"
+TOF_MAX_RANGE_M = 3.0
+TOF_RANGE_STD_M = 0.06
+TOF_SENSOR_OFFSET_REAR_M = 0.12  # metres from rover pivot centre to the rear sensor
+TOF_WEIGHT = 0.5                  # blend weight: scales ToF log-likelihood vs. landmark camera
 
 # Particle filter configuration
 PARTICLE_COUNT = 5000
@@ -113,6 +138,84 @@ LIVE_VIEW_WAIT_MS = 1
 CONVERGENCE_ITERATIONS = 5
 # Milliseconds to pause between convergence steps (set to 0 to require a keypress each step).
 UPDATE_STEP_DELAY_MS = 1500
+
+
+class EspCamSource:
+    """HTTP client for the XIAO ESP32S3 camera/ToF sensor node.
+
+    Connects to the ESP32's HTTP server and provides:
+    - ``capture_frame()``  -- fetches ``/capture`` and decodes the JPEG as a BGR frame.
+    - ``read_tof()``       -- fetches ``/distance`` and returns a :class:`ToFFrame`.
+
+    Set ``ESPCAM_IP`` in the config section above to the IP printed on the
+    ESP32 serial console after it connects to Wi-Fi.
+    """
+
+    def __init__(self, ip: str, port: int = 80, timeout_s: float = 3.0) -> None:
+        self._base = f"http://{ip}:{port}"
+        self._timeout = timeout_s
+
+    @staticmethod
+    def _center_strip_values_m(grid_m: np.ndarray) -> np.ndarray:
+        """Return flattened center-strip values (rows 3-4) after orientation correction."""
+        return grid_m[3:5, :].reshape(-1)
+
+    def capture_frame(self) -> Optional[np.ndarray]:
+        """GET /capture → decode JPEG → BGR ndarray, or None on failure."""
+        try:
+            with urllib.request.urlopen(
+                f"{self._base}/capture", timeout=self._timeout
+            ) as resp:
+                data = resp.read()
+        except Exception as exc:
+            print(f"[EspCam] capture failed: {exc}")
+            return None
+        arr = np.frombuffer(data, dtype=np.uint8)
+        frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if frame is None:
+            print("[EspCam] JPEG decode failed")
+            return None
+        # Camera is inverted on the y-axis; flip to correct orientation.
+        frame = cv2.flip(frame, 0)
+        return frame
+
+    def read_tof(self) -> Optional[ToFFrame]:
+        """GET /distance → ToFFrame with distances in metres, or None on failure."""
+        try:
+            with urllib.request.urlopen(
+                f"{self._base}/distance", timeout=self._timeout
+            ) as resp:
+                payload = json.loads(resp.read())
+        except Exception as exc:
+            print(f"[EspCam] distance read failed: {exc}")
+            return None
+        if not payload.get("ok"):
+            print(f"[EspCam] distance error: {payload.get('error')}")
+            return None
+        grid_mm = payload.get("grid")
+        if grid_mm is None or len(grid_mm) != 8:
+            print("[EspCam] unexpected grid shape")
+            return None
+        arr = np.array(grid_mm, dtype=np.float32) / 1000.0  # mm -> m
+        # ToF module is mounted upside down; rotate to rover frame.
+        arr = np.rot90(arr, 2)
+        arr[arr <= 0.0] = float("nan")                       # zero = no return
+
+        valid = arr[np.isfinite(arr)]
+        if valid.size > 0:
+            center_mm = float(np.nanmean(arr[3:5, 3:5]) * 1000.0)
+            strip_mm = np.round(self._center_strip_values_m(arr) * 1000.0, 0).astype(np.int32)
+            print(
+                "[EspCam ToF] "
+                f"min={float(np.nanmin(valid) * 1000.0):.0f} mm, "
+                f"max={float(np.nanmax(valid) * 1000.0):.0f} mm, "
+                f"center={center_mm:.0f} mm, "
+                f"strip_mm={strip_mm.tolist()}"
+            )
+        else:
+            print("[EspCam ToF] no valid zones in current frame")
+
+        return ToFFrame(arr)
 
 
 def load_frame_sequence() -> list:
@@ -171,19 +274,49 @@ def main() -> None:
         cy=CY,
         load_default_detector=LOAD_DEFAULT_DETECTOR,
     )
+    tof_config = None
+    if ESPCAM_TOF_ENABLED:
+        preset = TOF_ZONE_PRESET.lower().strip()
+        if preset == "middle":
+            zone_mask = ToFConfig.middle_strip_mask()
+            use_middle_strip_2d = True
+        elif preset == "centre":
+            zone_mask = ToFConfig.centre_strip_mask()
+            use_middle_strip_2d = False
+        else:
+            zone_mask = ToFConfig.wide_strip_mask()
+            use_middle_strip_2d = False
+        tof_config = ToFConfig(
+            zone_mask=zone_mask,
+            max_range_m=TOF_MAX_RANGE_M,
+            range_std_m=TOF_RANGE_STD_M,
+            sensor_offset_rear_m=TOF_SENSOR_OFFSET_REAR_M,
+            use_middle_strip_2d=use_middle_strip_2d,
+        )
+        print(f"[ToF] enabled -- {tof_config}")
+
     localizer = ParticleFilterLocalizer(
         localization_map=localization_map,
         detector=detector,
         particle_count=PARTICLE_COUNT,
         initial_pose=KNOWN_INITIAL_POSE,
+        tof_config=tof_config,
+        tof_weight=TOF_WEIGHT,
     )
     visualizer = LocalizationVisualizer(config=VISUALIZATION_CONFIG)
 
     camera = None
+    esp_cam = None
     if not USE_TEST_IMAGE and not USE_FRAME_SEQUENCE:
-        camera = USBCamera(camera_id=CAMERA_ID)
-        if not camera.start():
-            raise SystemExit("Failed to start the camera.")
+        if ESPCAM_ENABLED:
+            esp_cam = EspCamSource(ESPCAM_IP, ESPCAM_CAPTURE_PORT, ESPCAM_TIMEOUT_S)
+            print(f"[EspCam] using ESP32 camera at http://{ESPCAM_IP}:{ESPCAM_CAPTURE_PORT}")
+            if ESPCAM_TOF_ENABLED:
+                print("[EspCam] ToF depth fusion enabled")
+        else:
+            camera = USBCamera(camera_id=CAMERA_ID)
+            if not camera.start():
+                raise SystemExit("Failed to start the camera.")
 
     try:
         update_index = 0
@@ -285,7 +418,10 @@ def main() -> None:
             while True:
                 frame = None
                 for _ in range(CAPTURE_RETRY_COUNT):
-                    frame = camera.get_frame()
+                    if esp_cam is not None:
+                        frame = esp_cam.capture_frame()
+                    else:
+                        frame = camera.get_frame()
                     if frame is not None:
                         break
                     cv2.waitKey(CAPTURE_RETRY_DELAY_MS)
@@ -293,7 +429,13 @@ def main() -> None:
                 if frame is None:
                     raise SystemExit("No frame received from the camera.")
 
-                update = localizer.update_from_image(frame, motion=MOTION_COMMAND)
+                tof_frame = None
+                if esp_cam is not None and ESPCAM_TOF_ENABLED:
+                    tof_frame = esp_cam.read_tof()
+
+                update = localizer.update_from_image(
+                    frame, motion=MOTION_COMMAND, tof_frame=tof_frame
+                )
                 update_index += 1
 
                 print_localization_result(update.estimate, update_index)

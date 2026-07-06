@@ -169,21 +169,20 @@ class ChairObservationDetector:
         if depth_map is None and image is not None and self.depth_model is not None:
             depth_map = self.infer_depth_map(image)
 
-        if depth_map is None:
-            # Depth-only pipeline: without a depth map we cannot produce ranges.
-            print("Warning: depth map unavailable, skipping detections (no geometry fallback enabled)")
-            return tuple()
-
         observations: List[ChairObservation] = []
         for detection in detections:
             bbox = tuple(float(value) for value in detection["bbox"])
             confidence = float(detection.get("confidence", 1.0))
 
-            source = "depth"
-            range_m = self._estimate_depth_from_bbox(depth_map, bbox)
+            range_m = None
+            source = "geometry"
+            if depth_map is not None:
+                range_m = self._estimate_depth_from_bbox(depth_map, bbox)
+                source = "depth"
+
             if range_m is None:
-                print("Warning: depth estimation failed for bbox {}, skipping detection".format(bbox))
-                continue
+                print("Warning: depth estimation failed for bbox {}, falling back to geometry-based estimate".format(bbox))
+                range_m = self._estimate_range_from_bbox_geometry(bbox)
 
             if range_m is None or not np.isfinite(range_m) or range_m <= 0.0:
                 continue
@@ -237,3 +236,13 @@ class ChairObservationDetector:
         # Simple and stable: median depth over bbox overlap.
         return float(np.median(valid_values))
 
+    def _estimate_range_from_bbox_geometry(
+        self,
+        bbox: Tuple[float, float, float, float],
+    ) -> Optional[float]:
+        """Fallback depth estimate using a nominal chair height."""
+        _, y1, _, y2 = bbox
+        pixel_height = max(0.0, y2 - y1)
+        if pixel_height < 8.0:
+            return None
+        return float((self.chair_height_m * self.fy) / pixel_height)

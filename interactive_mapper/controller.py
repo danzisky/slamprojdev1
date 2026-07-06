@@ -28,7 +28,6 @@ class InteractiveMapper:
         resolution: float = 0.0197,
         min_wall_distance: float = 0.3,
         speed_multiplier: float = 1.0,
-        use_fused_internal_yaw: bool = False,
         auto_execute_path: bool = True,
         window_name: str = "Interactive Mapper",
     ) -> None:
@@ -45,7 +44,6 @@ class InteractiveMapper:
             robot_ip=robot_ip,
             speed_multiplier=speed_multiplier,
             external_imu=None,
-            use_fused_internal_yaw=use_fused_internal_yaw,
         )
 
         # Sensor hub handles camera/IMU attachments and the latest sensor snapshot.

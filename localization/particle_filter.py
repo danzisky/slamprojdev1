@@ -11,12 +11,14 @@ from .association import AssociationResult, JointCompatibilityAssociator
 from .detector import ChairObservationDetector
 from .map_data import ChairLocalizationMap
 from .math_utils import weighted_circular_mean, weighted_circular_std, wrap_to_pi
+from .tof import ToFConfig, ToFIntegrator
 from .types import (
     ChairObservation,
     LocalizationEstimate,
     LocalizationUpdate,
     MotionCommand,
     Pose2D,
+    ToFFrame,
 )
 
 
@@ -48,6 +50,8 @@ class ParticleFilterLocalizer:
         roughening_heading_std_rad: float = math.radians(3.0),
         associator: Optional[JointCompatibilityAssociator] = None,
         random_seed: Optional[int] = None,
+        tof_config: Optional[ToFConfig] = None,
+        tof_weight: float = 1.0,
     ):
         self.map = localization_map
         self.detector = detector
@@ -68,6 +72,12 @@ class ParticleFilterLocalizer:
         self.roughening_heading_std_rad = float(roughening_heading_std_rad)
         self.associator = associator or JointCompatibilityAssociator()
         self.rng = np.random.default_rng(random_seed)
+
+        # Optional rear-facing ToF depth sensor.
+        self.tof_weight = float(tof_weight)
+        self.tof_integrator: Optional[ToFIntegrator] = (
+            ToFIntegrator(localization_map, tof_config) if tof_config is not None else None
+        )
 
         if (
             self.enable_range_fov_gating
@@ -203,6 +213,7 @@ class ParticleFilterLocalizer:
         image: np.ndarray,
         motion: Optional[MotionCommand] = None,
         do_resample: bool = True,
+        tof_frame: Optional[ToFFrame] = None,
     ) -> LocalizationUpdate:
         """Full predict-update cycle using the configured chair detector."""
         if self.detector is None:
@@ -216,6 +227,7 @@ class ParticleFilterLocalizer:
             observations=observations,
             motion=motion,
             do_resample=do_resample,
+            tof_frame=tof_frame,
         )
 
     def update_from_observations(
@@ -223,46 +235,56 @@ class ParticleFilterLocalizer:
         observations: Sequence[ChairObservation],
         motion: Optional[MotionCommand] = None,
         do_resample: bool = True,
+        tof_frame: Optional[ToFFrame] = None,
     ) -> LocalizationUpdate:
         """Update particle weights from externally supplied chair observations."""
         if motion is not None:
             self.predict(motion)
 
         observations = tuple(observations)
-        if not observations:
+        if not observations and tof_frame is None:
             estimate = self.estimate_pose(matched_landmarks=0, observation_count=0)
             update = LocalizationUpdate(
                 estimate=estimate,
                 observations=tuple(),
                 matches=tuple(),
                 best_particle_index=int(np.argmax(self.weights)),
+                tof_frame=None,
             )
             self.last_update = update
             return update
 
         prior_log_weights = np.log(np.clip(self.weights, 1e-300, None))
-        posterior_log_weights = np.zeros_like(prior_log_weights)
+        posterior_log_weights = prior_log_weights.copy()
         association_results: list[AssociationResult] = []
 
-        for particle_index in range(self.particle_count):
-            particle_pose = Pose2D(
-                x_m=float(self.x_m[particle_index]),
-                y_m=float(self.y_m[particle_index]),
-                heading_rad=float(self.heading_rad[particle_index]),
-            )
+        # ── Landmark / camera update ──────────────────────────────────────────
+        if observations:
+            for particle_index in range(self.particle_count):
+                particle_pose = Pose2D(
+                    x_m=float(self.x_m[particle_index]),
+                    y_m=float(self.y_m[particle_index]),
+                    heading_rad=float(self.heading_rad[particle_index]),
+                )
 
-            max_range_m = self.measurement_max_range_m if self.enable_range_fov_gating else None
-            half_fov_rad = self.camera_half_fov_rad if self.enable_range_fov_gating else None
-            predictions = self.map.visible_landmarks(
-                particle_pose,
-                max_range_m=max_range_m,
-                half_fov_rad=half_fov_rad,
+                max_range_m = self.measurement_max_range_m if self.enable_range_fov_gating else None
+                half_fov_rad = self.camera_half_fov_rad if self.enable_range_fov_gating else None
+                predictions = self.map.visible_landmarks(
+                    particle_pose,
+                    max_range_m=max_range_m,
+                    half_fov_rad=half_fov_rad,
+                )
+                # Associate observations with visible predictions
+                result = self.associator.associate(observations, predictions)
+                association_results.append(result)
+                posterior_log_weights[particle_index] += math.log(max(result.likelihood, 1e-300))
+
+        # ── Rear-facing ToF depth update (optional) ───────────────────────────
+        if tof_frame is not None and self.tof_integrator is not None:
+            tof_log_likelihoods = self.tof_integrator.compute_log_likelihoods(
+                self.x_m, self.y_m, self.heading_rad, tof_frame
             )
-            # Associate observations with visible predictions
-            result = self.associator.associate(observations, predictions)
-            association_results.append(result)
-            # Update weight using likelihood directly (not log)
-            posterior_log_weights[particle_index] = prior_log_weights[particle_index] + math.log(max(result.likelihood, 1e-300))
+            posterior_log_weights += self.tof_weight * tof_log_likelihoods
 
         max_log_weight = float(np.max(posterior_log_weights))
         normalized_weights = np.exp(posterior_log_weights - max_log_weight)
@@ -274,10 +296,17 @@ class ParticleFilterLocalizer:
 
         self.weights = normalized_weights
         best_particle_index = int(np.argmax(self.weights))
-        best_association = association_results[best_particle_index]
+
+        if association_results:
+            best_association = association_results[best_particle_index]
+            best_matches = best_association.matches
+            matched_count = len(best_matches)
+        else:
+            best_matches = tuple()
+            matched_count = 0
 
         estimate = self.estimate_pose(
-            matched_landmarks=len(best_association.matches),
+            matched_landmarks=matched_count,
             observation_count=len(observations),
         )
         # Build update from pre-resample belief so that the reported pose, std and
@@ -285,8 +314,9 @@ class ParticleFilterLocalizer:
         update = LocalizationUpdate(
             estimate=estimate,
             observations=observations,
-            matches=best_association.matches,
+            matches=best_matches,
             best_particle_index=best_particle_index,
+            tof_frame=tof_frame,
         )
 
         if do_resample and self.effective_sample_size() < self.resample_threshold * self.particle_count:

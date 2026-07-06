@@ -4,6 +4,7 @@ from .association import AssociationResult, JointCompatibilityAssociator
 from .detector import ChairObservationDetector
 from .map_data import ChairLocalizationMap
 from .particle_filter import ParticleFilterLocalizer
+from .tof import ToFConfig, ToFIntegrator
 from .types import (
     ChairLandmark,
     ChairObservation,
@@ -12,6 +13,7 @@ from .types import (
     MotionCommand,
     Pose2D,
     PredictedLandmarkMeasurement,
+    ToFFrame,
 )
 from .visualization import LocalizationVisualizer, VisualizationConfig
 
@@ -29,5 +31,8 @@ __all__ = [
     "ParticleFilterLocalizer",
     "Pose2D",
     "PredictedLandmarkMeasurement",
+    "ToFConfig",
+    "ToFFrame",
+    "ToFIntegrator",
     "VisualizationConfig",
 ]

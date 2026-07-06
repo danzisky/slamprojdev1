@@ -92,15 +92,20 @@ class LocalizationVisualizer:
                 continue
 
             x1, y1, x2, y2 = [int(round(value)) for value in observation.bbox]
-            cv2.rectangle(preview, (x1, y1), (x2, y2), (0, 255, 0), 2)
-            label = f"r={observation.range_m:.2f}m, b={math.degrees(observation.bearing_rad):.1f}deg"
+            is_depth = observation.source == "depth"
+            color = (0, 200, 0) if is_depth else (0, 120, 255)
+            cv2.rectangle(preview, (x1, y1), (x2, y2), color, 2)
+            label = (
+                f"{observation.source}: r={observation.range_m:.2f}m, "
+                f"b={math.degrees(observation.bearing_rad):.1f}deg"
+            )
             cv2.putText(
                 preview,
                 label,
                 (x1, max(20, y1 - 8)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.5,
-                (0, 255, 0),
+                color,
                 1,
             )
         return preview
@@ -176,8 +181,10 @@ class LocalizationVisualizer:
         if update is not None:
             if self.config.draw_detection_overlay_on_map:
                 self._draw_detection_overlay_on_map(preview, localization_map, localizer, update)
+            self._draw_tof_rays_on_map(preview, localization_map, localizer, update)
             self._draw_pose_marker(preview, update.estimate.pose, localization_map, (0, 0, 255), "robot")
             self._draw_status_box(preview, update)
+            self._draw_tof_overlay(preview, update)
         else:
             # No measurement yet — label the view so the user knows this is the prior
             self._draw_phase_label(preview, "INITIAL SPREAD")
@@ -305,6 +312,114 @@ class LocalizationVisualizer:
                 cv2.LINE_AA,
             )
 
+    def _draw_tof_overlay(self, image: np.ndarray, update: LocalizationUpdate) -> None:
+        """Draw ToF readings as text + mini 8x8 heatmap when a depth frame is available."""
+        if update.tof_frame is None:
+            return
+
+        ranges = update.tof_frame.ranges_m
+        valid = ranges[np.isfinite(ranges)]
+        if valid.size == 0:
+            summary_lines = ["ToF: no valid data"]
+        else:
+            center_mm = float(np.nanmean(ranges[3:5, 3:5]) * 1000.0)
+            strip_mm = np.round(ranges[3:5, :] * 1000.0, 0)
+            summary_lines = [
+                f"ToF min={float(np.nanmin(valid) * 1000.0):.0f}mm max={float(np.nanmax(valid) * 1000.0):.0f}mm",
+                f"ToF center={center_mm:.0f}mm",
+                f"ToF strip={strip_mm.astype(np.int32).reshape(-1).tolist()}",
+            ]
+
+        x0, y0 = 10, image.shape[0] - 90
+        for i, text in enumerate(summary_lines):
+            y = y0 + i * 18
+            cv2.putText(image, text, (x0, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (20, 20, 20), 2, cv2.LINE_AA)
+            cv2.putText(image, text, (x0, y), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (230, 230, 230), 1, cv2.LINE_AA)
+
+        # Mini heatmap in bottom-right corner.
+        hm_x1, hm_y1 = image.shape[1] - 110, image.shape[0] - 110
+        hm_size = 96
+        if valid.size == 0:
+            heat = np.zeros((8, 8), dtype=np.uint8)
+        else:
+            max_m = float(np.nanmax(valid))
+            clipped = np.clip(np.nan_to_num(ranges, nan=max_m), 0.0, max_m)
+            heat = np.uint8(np.round((clipped / max(max_m, 1e-6)) * 255.0))
+
+        heatmap = cv2.applyColorMap(heat, cv2.COLORMAP_TURBO)
+        heatmap = cv2.resize(heatmap, (hm_size, hm_size), interpolation=cv2.INTER_NEAREST)
+        image[hm_y1 : hm_y1 + hm_size, hm_x1 : hm_x1 + hm_size] = heatmap
+        cv2.rectangle(image, (hm_x1, hm_y1), (hm_x1 + hm_size, hm_y1 + hm_size), (255, 255, 255), 1)
+        cv2.putText(
+            image,
+            "ToF 8x8",
+            (hm_x1, hm_y1 - 6),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_tof_rays_on_map(
+        self,
+        image: np.ndarray,
+        localization_map: ChairLocalizationMap,
+        localizer: ParticleFilterLocalizer,
+        update: LocalizationUpdate,
+    ) -> None:
+        """Draw middle-strip ToF rays from robot POV on the map (measured vs expected)."""
+        if update.tof_frame is None or localizer.tof_integrator is None:
+            return
+
+        cfg = localizer.tof_integrator.config
+        pose = update.estimate.pose
+        ranges = update.tof_frame.ranges_m
+
+        zone_deg = cfg.h_fov_deg / 8.0
+        col_offsets = np.deg2rad((np.arange(8, dtype=np.float64) - 3.5) * zone_deg)
+
+        rear_heading = pose.heading_rad + math.pi
+        sensor_x = pose.x_m + cfg.sensor_offset_rear_m * math.cos(rear_heading)
+        sensor_y = pose.y_m + cfg.sensor_offset_rear_m * math.sin(rear_heading)
+        sensor_px, sensor_py = localization_map.world_to_pixel(sensor_x, sensor_y)
+
+        if not (0 <= sensor_px < localization_map.width_px and 0 <= sensor_py < localization_map.height_px):
+            return
+
+        for col in range(8):
+            measured_m = float(np.nanmean(ranges[3:5, col]))
+            if not math.isfinite(measured_m) or measured_m < 0.02:
+                continue
+            measured_m = min(measured_m, cfg.max_range_m)
+
+            ray_angle = rear_heading + float(col_offsets[col])
+            expected_m = localization_map.raycast_distance(
+                sensor_x,
+                sensor_y,
+                ray_angle,
+                cfg.max_range_m,
+                step_m=cfg.raycast_step_m,
+            )
+
+            measured_end = (
+                sensor_x + measured_m * math.cos(ray_angle),
+                sensor_y + measured_m * math.sin(ray_angle),
+            )
+            expected_end = (
+                sensor_x + expected_m * math.cos(ray_angle),
+                sensor_y + expected_m * math.sin(ray_angle),
+            )
+
+            mx, my = localization_map.world_to_pixel(measured_end[0], measured_end[1])
+            ex, ey = localization_map.world_to_pixel(expected_end[0], expected_end[1])
+
+            # Measured ray (cyan), expected map ray (yellow).
+            cv2.line(image, (sensor_px, sensor_py), (mx, my), (255, 255, 0), 2, cv2.LINE_AA)
+            cv2.line(image, (sensor_px, sensor_py), (ex, ey), (0, 220, 255), 1, cv2.LINE_AA)
+            cv2.circle(image, (mx, my), 2, (255, 255, 0), -1, cv2.LINE_AA)
+            cv2.circle(image, (ex, ey), 2, (0, 220, 255), -1, cv2.LINE_AA)
+
     def _draw_detection_overlay_on_map(
         self,
         image: np.ndarray,
@@ -336,23 +451,28 @@ class LocalizationVisualizer:
             observed_y_m = pose.y_m + observation.range_m * math.sin(absolute_bearing)
             obs_px, obs_py = localization_map.world_to_pixel(observed_x_m, observed_y_m)
 
-            if not (0 <= obs_px < localization_map.width_px and 0 <= obs_py < localization_map.height_px):
-                continue
-
             matched = obs_idx in matched_by_observation
             detection_color = (70, 220, 70) if matched else (0, 165, 255)
 
+            # Keep detections visible even when projected endpoints land outside map bounds.
+            rect = (0, 0, localization_map.width_px, localization_map.height_px)
+            clipped_ok, clipped_p0, clipped_p1 = cv2.clipLine(rect, (robot_px, robot_py), (obs_px, obs_py))
+            if not clipped_ok:
+                continue
+
             cv2.line(
                 image,
-                (robot_px, robot_py),
-                (obs_px, obs_py),
+                clipped_p0,
+                clipped_p1,
                 detection_color,
                 self.config.detection_ray_thickness_px,
                 cv2.LINE_AA,
             )
+
+            draw_obs_px, draw_obs_py = clipped_p1
             cv2.circle(
                 image,
-                (obs_px, obs_py),
+                (draw_obs_px, draw_obs_py),
                 self.config.detection_point_radius_px,
                 detection_color,
                 -1,
@@ -362,7 +482,7 @@ class LocalizationVisualizer:
             cv2.putText(
                 image,
                 f"D{obs_idx}",
-                (obs_px + 4, max(12, obs_py - 3)),
+                (draw_obs_px + 4, max(12, draw_obs_py - 3)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.35,
                 (30, 30, 30),
@@ -372,7 +492,7 @@ class LocalizationVisualizer:
             cv2.putText(
                 image,
                 f"D{obs_idx}",
-                (obs_px + 4, max(12, obs_py - 3)),
+                (draw_obs_px + 4, max(12, draw_obs_py - 3)),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.35,
                 (255, 255, 255),
@@ -391,11 +511,11 @@ class LocalizationVisualizer:
             if not (0 <= landmark_px < localization_map.width_px and 0 <= landmark_py < localization_map.height_px):
                 continue
 
-            cv2.line(image, (obs_px, obs_py), (landmark_px, landmark_py), (255, 0, 255), 1, cv2.LINE_AA)
+            cv2.line(image, (draw_obs_px, draw_obs_py), (landmark_px, landmark_py), (255, 0, 255), 1, cv2.LINE_AA)
 
             fit_error_m = math.hypot(observed_x_m - prediction.landmark.x_m, observed_y_m - prediction.landmark.y_m)
-            label_x = (obs_px + landmark_px) // 2
-            label_y = (obs_py + landmark_py) // 2
+            label_x = (draw_obs_px + landmark_px) // 2
+            label_y = (draw_obs_py + landmark_py) // 2
             cv2.putText(
                 image,
                 f"{fit_error_m:.2f}m",

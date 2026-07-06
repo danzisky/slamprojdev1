@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Tuple
+
+import numpy as np
 
 
 @dataclass(frozen=True)
@@ -78,3 +80,26 @@ class LocalizationUpdate:
     observations: Tuple[ChairObservation, ...]
     matches: Tuple[Tuple[int, int], ...]
     best_particle_index: int
+    tof_frame: Optional["ToFFrame"] = None
+
+
+@dataclass
+class ToFFrame:
+    """Single VL53L5CX depth frame.
+
+    ``ranges_m`` is an (8, 8) float32 array of measured distances in metres.
+    Use ``float('nan')`` or values < 0.02 m to mark invalid / no-return zones.
+
+    The array layout matches the driver output:
+    - axis 0 (rows) → vertical, row 0 at top
+    - axis 1 (cols) → horizontal, col 0 at the left (negative azimuth)
+    """
+
+    ranges_m: np.ndarray  # shape (8, 8), dtype float32
+
+    def __post_init__(self) -> None:
+        self.ranges_m = np.asarray(self.ranges_m, dtype=np.float32)
+        if self.ranges_m.shape != (8, 8):
+            raise ValueError(
+                f"ToFFrame.ranges_m must be shape (8, 8), got {self.ranges_m.shape}"
+            )

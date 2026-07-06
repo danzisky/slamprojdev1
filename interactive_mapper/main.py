@@ -44,7 +44,6 @@ if __package__ in {None, ""}:
         START_HEADING_DEG,
         START_X,
         START_Y,
-        USE_FUSED_INTERNAL_YAW,
         WINDOW_NAME,
     )
     from interactive_mapper.controller import InteractiveMapper  # type: ignore
@@ -85,7 +84,6 @@ else:
         START_HEADING_DEG,
         START_X,
         START_Y,
-        USE_FUSED_INTERNAL_YAW,
         WINDOW_NAME,
     )
     from .controller import InteractiveMapper
@@ -155,7 +153,6 @@ def run() -> None:
         resolution=RESOLUTION_M_PER_PX,
         min_wall_distance=MIN_WALL_DISTANCE_M,
         speed_multiplier=SPEED_MULTIPLIER,
-        use_fused_internal_yaw=USE_FUSED_INTERNAL_YAW,
         auto_execute_path=AUTO_EXECUTE_PATH,
         window_name=WINDOW_NAME,
     )
